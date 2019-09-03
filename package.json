@@ -1,6 +1,6 @@
 {
-  "name": "express-openapi-validator",
-  "version": "1.7.0",
+  "name": "@tampmd/express-openapi-validator",
+  "version": "1.7.3",
   "description": "Automatically validate API requests using an OpenAPI 3 and Express.",
   "main": "dist/index.js",
   "scripts": {
@@ -11,7 +11,7 @@
     "codacy": "cat coverage/lcov.info | codacy-coverage"
   },
   "repository": {
-    "url": "https://github.com/cdimascio/express-openapi-validator"
+    "url": "https://github.com/tamedia-pmd/express-openapi-validator"
   },
   "keywords": [
     "openapi",
