@@ -22,7 +22,12 @@ export function applyOpenApiMetadata(openApiContext: OpenApiContext) {
 
   function lookupRoute(req) {
     const path = req.path;
-    const method = req.method;
+    let method = req.method;
+    const crossOriginRequestMethod = req.headers["access-control-request-method"];
+    if( crossOriginRequestMethod ){
+      method = crossOriginRequestMethod;
+    }
+
     const routeEntries = Object.entries(openApiContext.expressRouteMap);
     for (const [expressRoute, methods] of routeEntries) {
       const schema = methods[method];
