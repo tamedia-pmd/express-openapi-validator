@@ -2,11 +2,10 @@ import * as path from 'path';
 import { expect } from 'chai';
 import * as request from 'supertest';
 import { createApp } from './common/app';
-
-const packageJson = require('../package.json');
+import * as packageJson from '../package.json';
 
 describe(packageJson.name, () => {
-  let apps = [];
+  const apps = [];
   let basePath = null;
 
   before(() => {
@@ -53,17 +52,17 @@ describe(packageJson.name, () => {
           // .expect('Content-Type', /json/)
           .expect(200));
 
-      it('should return 200 with unknown query parameter', async () =>
+      it('should return 400 with unknown query parameter', async () =>
         request(apps[i])
           .get(`${basePath}/pets`)
           .query({
             test: 'one',
             limit: 10,
-            bad_param: 'test',
+            unknown_param: 'test',
           })
           .set('Accept', 'application/json')
           .expect('Content-Type', /json/)
-          .expect(200));
+          .expect(400));
 
       it('should return 400 when improper range specified', async () =>
         request(apps[i])
@@ -82,10 +81,28 @@ describe(packageJson.name, () => {
             expect(e[0].message).to.equal('should be >= 5');
           }));
 
-      it('should return 200 when JSON in query param', async () =>
+      it('should return 400 when non-urlencoded JSON in query param', async () =>
         request(apps[i])
           .get(`${basePath}/pets`)
           .query(`limit=10&test=one&testJson={"foo": "bar"}`)
+          .set('Accept', 'application/json')
+          .expect('Content-Type', /json/)
+          .then(r => {
+            expect(r.body)
+              .to.have.property('message')
+              .that.equals(
+                "Parameter 'testJson' must be url encoded. It's value may not contain reserved characters.",
+              );
+          }));
+
+      it('should return 200 when JSON in query param', async () =>
+        request(apps[i])
+          .get(`${basePath}/pets`)
+          .query(
+            `limit=10&test=one&testJson=${encodeURIComponent(
+              '{"foo": "bar"}',
+            )}`,
+          )
           .set('Accept', 'application/json')
           .expect('Content-Type', /json/)
           .expect(200));
@@ -93,7 +110,11 @@ describe(packageJson.name, () => {
       it('should return 400 when improper JSON in query param', async () =>
         request(apps[i])
           .get(`${basePath}/pets`)
-          .query(`limit=10&test=one&testJson={"foo": "test"}`)
+          .query({
+            limit: 10,
+            test: 'one',
+            testJson: { foo: 'test' },
+          })
           .set('Accept', 'application/json')
           .expect('Content-Type', /json/)
           .expect(400)
@@ -102,14 +123,43 @@ describe(packageJson.name, () => {
             expect(e).to.have.length(1);
             expect(e[0].path).to.contain('testJson');
             expect(e[0].message).to.equal(
-              'should be equal to one of the allowed values',
+              'should be equal to one of the allowed values: bar, baz',
             );
+          }));
+
+      it('should return 400 when comma separated array in query param', async () =>
+        request(apps[i])
+          .get(`${basePath}/pets`)
+          .query({
+            limit: 10,
+            test: 'one',
+            testArray: 'foo,bar,baz',
+          })
+          .set('Accept', 'application/json')
+          .expect('Content-Type', /json/)
+          .expect(200));
+
+      it('should return 400 when comma separated array in query param is not url encoded', async () =>
+        request(apps[i])
+          .get(`${basePath}/pets`)
+          .query(`limit=10&test=one&testArray=foo,bar,baz`)
+          .set('Accept', 'application/json')
+          .expect('Content-Type', /json/)
+          .expect(400)
+          .then(r => {
+            expect(r.body)
+              .to.have.property('message')
+              .that.equals(
+                "Parameter 'testArray' must be url encoded. It's value may not contain reserved characters.",
+              );
           }));
 
       it('should return 200 when separated array in query param', async () =>
         request(apps[i])
           .get(`${basePath}/pets`)
-          .query(`limit=10&test=one&testArray=foo,bar,baz`)
+          .query(
+            `limit=10&test=one&testArray=${encodeURIComponent('foo,bar,baz')}`,
+          )
           .set('Accept', 'application/json')
           .expect('Content-Type', /json/)
           .expect(200));
@@ -117,16 +167,21 @@ describe(packageJson.name, () => {
       it('should return 400 when improper separated array in query param', async () =>
         request(apps[i])
           .get(`${basePath}/pets`)
-          .query(`limit=10&test=one&testArray=foo,bar,test`)
+          .query({
+            limit: 10,
+            test: 'one',
+            testArray: 'foo,bar,test',
+          })
           .set('Accept', 'application/json')
           .expect('Content-Type', /json/)
           .expect(400)
           .then(r => {
+            console.log(r.body);
             const e = r.body.errors;
             expect(e).to.have.length(1);
             expect(e[0].path).to.contain('testArray');
             expect(e[0].message).to.equal(
-              'should be equal to one of the allowed values',
+              'should be equal to one of the allowed values: foo, bar, baz',
             );
           }));
 
@@ -152,7 +207,7 @@ describe(packageJson.name, () => {
             expect(e).to.have.length(1);
             expect(e[0].path).to.contain('testArrayExplode');
             expect(e[0].message).to.equal(
-              'should be equal to one of the allowed values',
+              'should be equal to one of the allowed values: foo, bar, baz',
             );
           }));
     });
@@ -203,16 +258,20 @@ describe(packageJson.name, () => {
             expect(r.body.id).to.equal('/not_under_an_openapi_basepath');
           }));
 
-      it('should return 400 if route is defined in openapi but not express and is called with invalid parameters', async () =>
-        request(apps[i])
-          .get(`${basePath}/route_not_defined_within_express`)
-          .expect(400)
-          .then(r => {
-            const e = r.body.errors;
-            expect(e[0].message).to.equal(
-              "should have required property 'name'",
-            );
-          }));
+      it(
+        'should return 400 if route is defined in openapi but not express and is ' +
+          'called with invalid parameters',
+        async () =>
+          request(apps[i])
+            .get(`${basePath}/route_not_defined_within_express`)
+            .expect(400)
+            .then(r => {
+              const e = r.body.errors;
+              expect(e[0].message).to.equal(
+                "should have required property 'name'",
+              );
+            }),
+      );
 
       it('should return 404 if route is defined in swagger but not express', async () =>
         request(apps[i])
@@ -313,6 +372,23 @@ describe(packageJson.name, () => {
             const e = r.body.errors;
             expect(e[0].path).contains('id');
             expect(e[0].message).equals('should be integer');
+          });
+      });
+
+      it('should return 400 an invalid enum value is given', async () => {
+        return request(apps[i])
+          .get(`${basePath}/pets`)
+          .query({
+            limit: 10,
+            test: 'one',
+            testArray: ['unknown_value'],
+          })
+          .expect(400)
+          .then(r => {
+            const e = r.body.errors;
+            expect(e[0].message).equals(
+              'should be equal to one of the allowed values: foo, bar, baz',
+            );
           });
       });
 

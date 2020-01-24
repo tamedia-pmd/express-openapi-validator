@@ -1,111 +1,54 @@
-import * as Ajv from 'ajv';
-import { validationError } from '../errors';
+import { Ajv } from 'ajv';
+import { createRequestAjv } from '../framework/ajv';
+import {
+  ContentType,
+  validationError,
+  ajvErrorsToValidatorError,
+  augmentAjvErrors,
+} from './util';
 import ono from 'ono';
-import * as draftSchema from 'ajv/lib/refs/json-schema-draft-04.json';
+import { NextFunction, RequestHandler, Response } from 'express';
+import {
+  ValidationSchema,
+  OpenAPIV3,
+  OpenApiRequest,
+  RequestValidatorOptions,
+  ValidateRequestOpts,
+  OpenApiRequestMetadata,
+} from '../framework/types';
+import { BodySchemaParser } from './parsers/body.parse';
+import { ParametersSchemaParser } from './parsers/schema.parse';
+import { RequestParameterMutator } from './parsers/req.parameter.mutator';
 
-const TYPE_JSON = 'application/json';
-
-const maxInt32 = 2 ** 31 - 1;
-const minInt32 = (-2) ** 31;
-
-const maxInt64 = 2 ** 63 - 1;
-const minInt64 = (-2) ** 63;
-
-const maxFloat = (2 - 2 ** -23) * 2 ** 127;
-const minFloat = 2 ** -126;
-
-const alwaysTrue = () => true;
-const base64regExp = /^[A-Za-z0-9+/]*(=|==)?$/;
-
-const formats = {
-  int32: {
-    validate: i => Number.isInteger(i) && i <= maxInt32 && i >= minInt32,
-    type: 'number',
-  },
-  int64: {
-    validate: i => Number.isInteger(i) && i <= maxInt64 && i >= minInt64,
-    type: 'number',
-  },
-  float: {
-    validate: i => typeof i === 'number' && (i <= maxFloat && i >= minFloat),
-    type: 'number',
-  },
-  double: {
-    validate: i => typeof i === 'number',
-    type: 'number',
-  },
-  byte: b => b.length % 4 === 0 && base64regExp.test(b),
-  binary: alwaysTrue,
-  password: alwaysTrue,
-};
+type OperationObject = OpenAPIV3.OperationObject;
+type SchemaObject = OpenAPIV3.SchemaObject;
+type ReferenceObject = OpenAPIV3.ReferenceObject;
+type SecurityRequirementObject = OpenAPIV3.SecurityRequirementObject;
+type SecuritySchemeObject = OpenAPIV3.SecuritySchemeObject;
+type ApiKeySecurityScheme = OpenAPIV3.ApiKeySecurityScheme;
 
 export class RequestValidator {
-  private _middlewareCache;
-  private _apiDocs;
-  private ajv;
+  private middlewareCache: { [key: string]: RequestHandler } = {};
+  private apiDoc: OpenAPIV3.Document;
+  private ajv: Ajv;
+  private requestOpts: ValidateRequestOpts = {};
 
-  constructor(apiDocs, options = {}) {
-    this._middlewareCache = {};
-    this._apiDocs = apiDocs;
-    this.ajv = this.initAjv(options);
+  constructor(
+    apiDoc: OpenAPIV3.Document,
+    options: RequestValidatorOptions = {},
+  ) {
+    this.middlewareCache = {};
+    this.apiDoc = apiDoc;
+    this.requestOpts.allowUnknownQueryParameters =
+      options.allowUnknownQueryParameters;
+    this.ajv = createRequestAjv(apiDoc, options);
   }
 
-  initAjv(options) {
-    const ajv = new Ajv({
-      ...options,
-      formats: { ...formats, ...options.formats },
-      schemaId: 'auto',
-      allErrors: true,
-      meta: draftSchema,
-    });
-    ajv.removeKeyword('propertyNames');
-    ajv.removeKeyword('contains');
-    ajv.removeKeyword('const');
-
-    /**
-     * Remove readOnly property in requestBody when validate.
-     * If you want validate response, then need secondary Ajv without modifying this keyword
-     * You can probably change this rule so that can't delete readOnly property in response
-     */
-    ajv.removeKeyword('readOnly');
-    ajv.addKeyword('readOnly', {
-      modifying: true,
-      compile: sch => {
-        if (sch) {
-          return (data, path, obj, propName) => {
-            delete obj[propName];
-            return true;
-          };
-        }
-
-        return () => true;
-      },
-    });
-
-    if (this._apiDocs.components.schemas) {
-      Object.entries(this._apiDocs.components.schemas).forEach(
-        ([id, schema]: any[]) => {
-          ajv.addSchema(schema, `#/components/schemas/${id}`);
-        },
-      );
-    }
-
-    if (this._apiDocs.components.requestBodies) {
-      Object.entries(this._apiDocs.components.requestBodies).forEach(
-        ([id, schema]: any[]) => {
-          // TODO add support for content all content types
-          ajv.addSchema(
-            schema.content[TYPE_JSON].schema,
-            `#/components/requestBodies/${id}`,
-          );
-        },
-      );
-    }
-
-    return ajv;
-  }
-
-  validate(req, res, next) {
+  public validate(
+    req: OpenApiRequest,
+    res: Response,
+    next: NextFunction,
+  ): void {
     if (!req.openapi) {
       // this path was not found in open api and
       // this path is not defined under an openapi base path
@@ -113,253 +56,156 @@ export class RequestValidator {
       return next();
     }
 
-    const path = req.openapi.expressRoute;
+    const openapi = <OpenApiRequestMetadata>req.openapi;
+    const path = openapi.expressRoute;
     if (!path) {
-      const message = 'not found';
-      const err = validationError(404, req.path, message);
-      throw ono(err, message);
+      throw validationError(404, req.path, 'not found');
     }
 
-    const pathSchema = req.openapi.schema;
-    if (!pathSchema) {
-      // add openapi metadata to make this case more clear
-      // its not obvious that missig schema means methodNotAllowed
-      const message = `${req.method} method not allowed`;
-      const err = validationError(405, req.path, message);
-      throw ono(err, message);
+    const reqSchema = openapi.schema;
+    if (!reqSchema) {
+      throw validationError(405, req.path, `${req.method} method not allowed`);
     }
 
     // cache middleware by combining method, path, and contentType
-    const contentType = this.extractContentType(req);
-    const key = `${req.method}-${req.path}-${contentType}`;
+    const contentType = ContentType.from(req);
+    const contentTypeKey = contentType.equivalents()[0] ?? 'not_provided';
+    const key = `${req.method}-${req.originalUrl}-${contentTypeKey}`;
 
-    if (!this._middlewareCache[key]) {
-      this._middlewareCache[key] = this.buildMiddleware(
-        path,
-        pathSchema,
-        contentType,
-      );
+    if (!this.middlewareCache[key]) {
+      const middleware = this.buildMiddleware(path, reqSchema, contentType);
+      this.middlewareCache[key] = middleware;
     }
-
-    return this._middlewareCache[key](req, res, next);
+    return this.middlewareCache[key](req, res, next);
   }
 
-  private extractContentType(req) {
-    let contentType = req.headers['content-type'] || 'not_provided';
-    let end = contentType.indexOf(';');
-    end = end === -1 ? contentType.length : end;
-    if (contentType) {
-      return contentType.substring(0, end);
-    }
-    return contentType;
-  }
+  private buildMiddleware(
+    path: string,
+    reqSchema: OperationObject,
+    contentType: ContentType,
+  ): RequestHandler {
+    const apiDoc = this.apiDoc;
+    const schemaParser = new ParametersSchemaParser(apiDoc);
+    const bodySchemaParser = new BodySchemaParser(this.ajv, apiDoc);
+    const parameters = schemaParser.parse(path, reqSchema.parameters);
+    const securityQueryParam = Security.queryParam(apiDoc, reqSchema);
+    const body = bodySchemaParser.parse(path, reqSchema, contentType);
 
-  private buildMiddleware(path, pathSchema, contentType) {
-    const parameters = this.parametersToSchema(path, pathSchema.parameters);
-    let requestBody = pathSchema.requestBody;
+    const properties: ValidationSchema = { ...parameters, body: body };
+    const required = (<SchemaObject>body).required ? ['body'] : [];
 
-    if (requestBody && requestBody.hasOwnProperty('$ref')) {
-      const id = requestBody.$ref.replace(/^.+\//i, '');
-      requestBody = this._apiDocs.components.requestBodies[id];
-    }
-
-    let body = this.requestBodyToSchema(path, contentType, requestBody);
-    let requiredAdds = requestBody && requestBody.required ? ['body'] : [];
-
+    // $schema: "http://json-schema.org/draft-04/schema#",
     const schema = {
-      // $schema: "http://json-schema.org/draft-04/schema#",
-      required: ['query', 'headers', 'params'].concat(requiredAdds),
-      properties: {
-        body,
-        ...parameters.schema,
-      },
+      required: ['query', 'headers', 'params'].concat(required),
+      properties,
     };
 
     const validator = this.ajv.compile(schema);
 
-    return (req, res, next) => {
-      const shouldUpdatePathParams =
-        Object.keys(req.openapi.pathParams).length > 0;
+    return (req: OpenApiRequest, res: Response, next: NextFunction): void => {
+      const openapi = <OpenApiRequestMetadata>req.openapi;
+      const hasPathParams = Object.keys(openapi.pathParams).length > 0;
 
-      if (shouldUpdatePathParams) {
-        req.params = req.openapi.pathParams || req.params;
+      if (hasPathParams) {
+        req.params = openapi.pathParams ?? req.params;
       }
 
-      req.schema = schema;
-      /**
-       * support json in request params, query, headers and cookies
-       * like this filter={"type":"t-shirt","color":"blue"}
-       *
-       * https://swagger.io/docs/specification/describing-parameters/#schema-vs-content
-       */
-      parameters.parseJson.forEach(item => {
-        if (req[item.reqField] && req[item.reqField][item.name]) {
-          req[item.reqField][item.name] = JSON.parse(
-            req[item.reqField][item.name],
-          );
-        }
-      });
+      const mutator = new RequestParameterMutator(apiDoc, path, properties);
 
-      /**
-       * array deserialization
-       * filter=foo,bar,baz
-       * filter=foo|bar|baz
-       * filter=foo%20bar%20baz
-       */
-      parameters.parseArray.forEach(item => {
-        if (req[item.reqField] && req[item.reqField][item.name]) {
-          req[item.reqField][item.name] = req[item.reqField][item.name].split(
-            item.delimiter,
-          );
-        }
-      });
+      mutator.modifyRequest(req);
 
-      /**
-       * forcing convert to array if scheme describes param as array + explode
-       */
-      parameters.parseArrayExplode.forEach(item => {
-        if (
-          req[item.reqField] &&
-          req[item.reqField][item.name] &&
-          !(req[item.reqField][item.name] instanceof Array)
-        ) {
-          req[item.reqField][item.name] = [req[item.reqField][item.name]];
-        }
-      });
+      if (!this.requestOpts.allowUnknownQueryParameters) {
+        this.processQueryParam(
+          req.query,
+          schema.properties.query,
+          securityQueryParam,
+        );
+      }
 
-      const reqToValidate = {
-        ...req,
-        cookies: req.cookies
-          ? { ...req.cookies, ...req.signedCookies }
-          : undefined,
-      };
-      const valid = validator(reqToValidate);
-      // save errors, Ajv overwrites errors on each validation call (race condition?)
-      // TODO look into Ajv async errors plugins
-      const errors = [...(validator.errors || [])];
+      const cookies = req.cookies
+        ? {
+            ...req.cookies,
+            ...req.signedCookies,
+          }
+        : undefined;
+
+      const valid = validator({ ...req, cookies });
       if (valid) {
         next();
       } else {
-        if (errors.length > 0) {
-          const error = {
-            status: 400,
-            errors: errors.map(e => {
-              const required =
-                e.params &&
-                e.params.missingProperty &&
-                e.dataPath + '.' + e.params.missingProperty;
-              return {
-                path: required || e.dataPath || e.schemaPath,
-                message: e.message,
-                errorCode: `${e.keyword}.openapi.validation`,
-              };
-            }),
-          };
-          const message = this.ajv.errorsText(errors, { dataVar: 'request' });
-          throw ono(error, message);
-        }
+        const errors = augmentAjvErrors([...(validator.errors ?? [])]);
+        const err = ajvErrorsToValidatorError(400, errors);
+        const message = this.ajv.errorsText(errors, { dataVar: 'request' });
+        throw ono(err, message);
       }
     };
   }
 
-  private requestBodyToSchema(path, contentType, requestBody: any = {}) {
-    if (requestBody.content) {
-      const content = requestBody.content[contentType];
-      if (!content) {
-        const message = `unsupported media type ${contentType}`;
-        const err = validationError(415, path, message);
-        throw ono(err, message);
+  private processQueryParam(query, schema, whiteList: string[] = []) {
+    if (!schema.properties) return;
+    const knownQueryParams = new Set(Object.keys(schema.properties));
+    whiteList.forEach(item => knownQueryParams.add(item));
+    const queryParams = Object.keys(query);
+    const allowedEmpty = schema.allowEmptyValue;
+    for (const q of queryParams) {
+      if (
+        !this.requestOpts.allowUnknownQueryParameters &&
+        !knownQueryParams.has(q)
+      ) {
+        throw validationError(
+          400,
+          `.query.${q}`,
+          `Unknown query parameter '${q}'`,
+        );
+      } else if (!allowedEmpty?.has(q) && (query[q] === '' || null)) {
+        throw validationError(
+          400,
+          `.query.${q}`,
+          `Empty value found for query parameter '${q}'`,
+        );
       }
-      return content.schema || {};
     }
-    return {};
+  }
+}
+
+class Security {
+  public static queryParam(
+    apiDocs: OpenAPIV3.Document,
+    schema: OperationObject,
+  ): string[] {
+    const hasPathSecurity =
+      schema.hasOwnProperty('security') && schema.security.length > 0;
+    const hasRootSecurity =
+      apiDocs.hasOwnProperty('security') && apiDocs.security.length > 0;
+
+    let usedSecuritySchema: SecurityRequirementObject[] = [];
+    if (hasPathSecurity) {
+      usedSecuritySchema = schema.security;
+    } else if (hasRootSecurity) {
+      // if no security schema for the path, use top-level security schema
+      usedSecuritySchema = apiDocs.security;
+    }
+
+    const securityQueryParameter = this.getSecurityQueryParams(
+      usedSecuritySchema,
+      apiDocs.components?.securitySchemes,
+    );
+    return securityQueryParameter;
   }
 
-  private parametersToSchema(path, parameters = []) {
-    const schema = { query: {}, headers: {}, params: {}, cookies: {} };
-    const reqFields = {
-      query: 'query',
-      header: 'headers',
-      path: 'params',
-      cookie: 'cookies',
-    };
-    const arrayDelimiter = {
-      form: ',',
-      spaceDelimited: ' ',
-      pipeDelimited: '|',
-    };
-    const parseJson = [];
-    const parseArray = [];
-    const parseArrayExplode = [];
-
-    parameters.forEach(parameter => {
-      if (parameter.hasOwnProperty('$ref')) {
-        const id = parameter.$ref.replace(/^.+\//i, '');
-        parameter = this._apiDocs.components.parameters[id];
-      }
-
-      const $in = parameter.in;
-      const name =
-        $in === 'header' ? parameter.name.toLowerCase() : parameter.name;
-
-      const reqField = reqFields[$in];
-      if (!reqField) {
-        const message = `Parameter 'in' has incorrect value '${$in}' for [${parameter.name}]`;
-        const err = validationError(400, path, message);
-        throw ono(err, message);
-      }
-
-      let parameterSchema = parameter.schema;
-      if (parameter.content && parameter.content[TYPE_JSON]) {
-        parameterSchema = parameter.content[TYPE_JSON].schema;
-        parseJson.push({ name, reqField });
-      }
-
-      if (!parameterSchema) {
-        const message = `No available parameter 'schema' or 'content' for [${parameter.name}]`;
-        const err = validationError(400, path, message);
-        throw ono(err, message);
-      }
-
-      if (
-        parameter.schema &&
-        parameter.schema.type === 'array' &&
-        !parameter.explode
-      ) {
-        const delimiter = arrayDelimiter[parameter.style];
-        if (!delimiter) {
-          const message = `Parameter 'style' has incorrect value '${parameter.style}' for [${parameter.name}]`;
-          const err = validationError(400, path, message);
-          throw ono(err, message);
-        }
-
-        parseArray.push({ name, reqField, delimiter });
-      }
-
-      if (
-        parameter.schema &&
-        parameter.schema.type === 'array' &&
-        parameter.explode
-      ) {
-        parseArrayExplode.push({ name, reqField });
-      }
-
-      if (!schema[reqField].properties) {
-        schema[reqField] = {
-          type: 'object',
-          properties: {},
-        };
-      }
-
-      schema[reqField].properties[name] = parameterSchema;
-      if (parameter.required) {
-        if (!schema[reqField].required) {
-          schema[reqField].required = [];
-        }
-        schema[reqField].required.push(name);
-      }
-    });
-
-    return { schema, parseJson, parseArray, parseArrayExplode };
+  private static getSecurityQueryParams(
+    usedSecuritySchema: SecurityRequirementObject[],
+    securitySchema: { [key: string]: ReferenceObject | SecuritySchemeObject },
+  ): string[] {
+    return usedSecuritySchema && securitySchema
+      ? usedSecuritySchema
+          .filter(obj => Object.entries(obj).length !== 0)
+          .map(sec => {
+            const securityKey = Object.keys(sec)[0];
+            return <SecuritySchemeObject>securitySchema[securityKey];
+          })
+          .filter(sec => sec?.type === 'apiKey' && sec?.in == 'query')
+          .map((sec: ApiKeySecurityScheme) => sec.name)
+      : [];
   }
 }

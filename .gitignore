@@ -8,3 +8,6 @@ dist
 .coveralls.yml
 .nyc_output
 secrets.zip
+jest
+junk
+/a_reference

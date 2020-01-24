@@ -6,27 +6,46 @@ import * as logger from 'morgan';
 
 import { OpenApiValidator } from '../../src';
 import { startServer, routes } from './app.common';
+import { OpenApiValidatorOpts } from '../../src/framework/types';
 
-export async function createApp(opts?: any, port: number = 3000) {
+export async function createApp(
+  opts?: OpenApiValidatorOpts,
+  port = 3000,
+  customRoutes = app => {},
+  useRoutes = true,
+  apiRouter = undefined,
+) {
   var app = express();
+  (<any>app).basePath = '/v1';
 
   app.use(bodyParser.json());
+  app.use(bodyParser.json({ type: 'application/hal+json' }));
+  app.use(bodyParser.text());
   app.use(logger('dev'));
-  app.use(express.json());
   app.use(express.urlencoded({ extended: false }));
   app.use(cookieParser());
   app.use(express.static(path.join(__dirname, 'public')));
 
-  new OpenApiValidator(opts).install(app);
+  await new OpenApiValidator(opts).install(apiRouter || app);
 
-  routes(app);
+  if (useRoutes) {
+    // register common routes
+    routes(app);
+  }
 
-  // Register error handler
-  app.use((err, req, res, next) => {
-    res.status(err.status || 500).json({
-      errors: err.errors,
+  // register custom routes
+  customRoutes(app);
+
+  if (useRoutes) {
+    // Register error handler
+    app.use((err, req, res, next) => {
+      // console.error(err);
+      res.status(err.status ?? 500).json({
+        message: err.message,
+        errors: err.errors,
+      });
     });
-  });
+  }
 
   const server = await startServer(app, port);
   const shutDown = () => {
