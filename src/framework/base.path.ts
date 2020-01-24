@@ -1,4 +1,4 @@
-import * as pathToRegexp from 'path-to-regexp';
+import { compile } from 'path-to-regexp';
 import { OpenAPIV3 } from './types';
 
 interface ServerUrlVariables {
@@ -9,7 +9,7 @@ interface ServerUrlValues {
   default?: string;
 }
 
-export default class BasePath {
+export class BasePath {
   public readonly variables: ServerUrlVariables = {};
   public readonly path: string = '';
   private allPaths: string[] = null;
@@ -26,7 +26,7 @@ export default class BasePath {
     for (const variable in server.variables) {
       if (server.variables.hasOwnProperty(variable)) {
         const v = server.variables[variable];
-        const enums = v.enum || [];
+        const enums = v.enum ?? [];
         if (enums.length === 0 && v.default) enums.push(v.default);
 
         this.variables[variable] = {
@@ -35,6 +35,13 @@ export default class BasePath {
         };
       }
     }
+  }
+
+  public static fromServers(servers: OpenAPIV3.ServerObject[]): BasePath[] {
+    if (!servers) {
+      return [new BasePath({ url: '' })];
+    }
+    return servers.map(server => new BasePath(server));
   }
 
   public hasVariables(): boolean {
@@ -56,7 +63,7 @@ export default class BasePath {
     }, []);
 
     const allParamCombos = cartesian(...allParams);
-    const toPath = pathToRegexp.compile(this.path);
+    const toPath = compile(this.path);
     const paths = new Set<string>();
     for (const combo of allParamCombos) {
       paths.add(toPath(combo));
@@ -65,14 +72,7 @@ export default class BasePath {
     return this.allPaths;
   }
 
-  public static fromServers(servers: OpenAPIV3.ServerObject[]) {
-    if (!servers) {
-      return [new BasePath({ url: '' })];
-    }
-    return servers.map(server => new BasePath(server));
-  }
-
-  private findUrlPath(u) {
+  private findUrlPath(u: string): string {
     const findColonSlashSlash = p => {
       const r = /:\/\//.exec(p);
       if (r) return r.index;
@@ -99,7 +99,7 @@ export default class BasePath {
 function cartesian(...arg) {
   const r = [],
     max = arg.length - 1;
-  function helper(obj, i) {
+  function helper(obj, i: number) {
     const values = arg[i];
     for (var j = 0, l = values.length; j < l; j++) {
       const a = { ...obj };

@@ -1,33 +1,40 @@
-import * as pathToRegexp from 'path-to-regexp';
-import * as _ from 'lodash';
-import { OpenApiContext } from '../openapi.context';
+import * as _zipObject from 'lodash.zipobject';
+import { pathToRegexp } from 'path-to-regexp';
+import { Response, NextFunction } from 'express';
+import { OpenApiContext } from '../framework/openapi.context';
+import {
+  OpenApiRequest,
+  OpenApiRequestHandler,
+  OpenApiRequestMetadata,
+} from '../framework/types';
 
-export function applyOpenApiMetadata(openApiContext: OpenApiContext) {
-  return (req, res, next) => {
+export function applyOpenApiMetadata(
+  openApiContext: OpenApiContext,
+): OpenApiRequestHandler {
+  return (req: OpenApiRequest, res: Response, next: NextFunction): void => {
     const matched = lookupRoute(req);
-
     if (matched) {
-      req.openapi = {};
       const { expressRoute, openApiRoute, pathParams, schema } = matched;
-      req.openapi.expressRoute = expressRoute;
-      req.openapi.openApiRoute = openApiRoute;
-      req.openapi.pathParams = pathParams;
-      req.openapi.schema = schema;
+      req.openapi = {
+        expressRoute: expressRoute,
+        openApiRoute: openApiRoute,
+        pathParams: pathParams,
+        schema: schema,
+      };
       req.params = pathParams;
     } else if (openApiContext.isManagedRoute(req.path)) {
       req.openapi = {};
     }
-    next();
+    -next();
   };
 
-  function lookupRoute(req) {
-    const path = req.path;
+  function lookupRoute(req: OpenApiRequest): OpenApiRequestMetadata {
+    const path = req.originalUrl.split("?")[0];
     let method = req.method;
     const crossOriginRequestMethod = req.headers["access-control-request-method"];
     if( crossOriginRequestMethod ){
       method = crossOriginRequestMethod;
     }
-
     const routeEntries = Object.entries(openApiContext.expressRouteMap);
     for (const [expressRoute, methods] of routeEntries) {
       const schema = methods[method];
@@ -47,7 +54,7 @@ export function applyOpenApiMetadata(openApiContext: OpenApiContext) {
       if (matchedRoute) {
         const paramKeys = keys.map(k => k.name);
         const paramsVals = matchedRoute.slice(1);
-        const pathParams = _.zipObject(paramKeys, paramsVals);
+        const pathParams = _zipObject(paramKeys, paramsVals);
 
         return {
           schema,

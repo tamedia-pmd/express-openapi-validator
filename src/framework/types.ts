@@ -1,21 +1,67 @@
-import { Request } from 'express';
-import { Logger } from 'ts-log';
-import BasePath from './base.path';
-export {
-  OpenAPIFrameworkArgs,
-  OpenAPIFrameworkConstructorArgs,
-  OpenAPIErrorTransformer,
-};
+import * as ajv from 'ajv';
+import * as multer from 'multer';
+import { Request, Response, NextFunction } from 'express';
+export { OpenAPIFrameworkArgs };
 
-type OpenAPIErrorTransformer = ({}, {}) => object;
+export type BodySchema =
+  | OpenAPIV3.ReferenceObject
+  | OpenAPIV3.SchemaObject
+  | {};
 
-type PathSecurityTuple = [RegExp, SecurityRequirement[]];
-
-interface SecurityRequirement {
-  [name: string]: SecurityScope[];
+export interface ParametersSchema {
+  query: object;
+  headers: object;
+  params: object;
+  cookies: object;
 }
 
-type SecurityScope = string;
+export interface ValidationSchema extends ParametersSchema {
+  body: BodySchema;
+}
+
+export interface OpenAPIFrameworkInit {
+  apiDoc: OpenAPIV3.Document;
+  basePaths: string[];
+}
+export type SecurityHandlers = {
+  [key: string]: (
+    req: Request,
+    scopes: string[],
+    schema: OpenAPIV3.SecuritySchemeObject,
+  ) => boolean | Promise<boolean>;
+};
+
+export interface RequestValidatorOptions
+  extends ajv.Options,
+    ValidateRequestOpts {}
+
+export type ValidateRequestOpts = {
+  allowUnknownQueryParameters?: boolean;
+};
+
+export type ValidateResponseOpts = {
+  removeAdditional?: 'failing' | boolean;
+};
+
+export type ValidateSecurityOpts = {
+  handlers?: SecurityHandlers;
+};
+
+export interface OpenApiValidatorOpts {
+  apiSpec: OpenAPIV3.Document | string;
+  validateResponses?: boolean | ValidateResponseOpts;
+  validateRequests?: boolean | ValidateRequestOpts;
+  validateSecurity?: boolean | ValidateSecurityOpts;
+  ignorePaths?: RegExp;
+  securityHandlers?: SecurityHandlers;
+  coerceTypes?: boolean | 'array';
+  unknownFormats?: true | string[] | 'ignore';
+  fileUploader?: boolean | multer.Options;
+  multerOpts?: multer.Options;
+  $refParser?: {
+    mode: 'bundle' | 'dereference';
+  };
+}
 
 export namespace OpenAPIV3 {
   export interface Document {
@@ -131,7 +177,7 @@ export namespace OpenAPIV3 {
   export type ArraySchemaObjectType = 'array';
   export type SchemaObject = ArraySchemaObject | NonArraySchemaObject;
 
-  interface ArraySchemaObject extends BaseSchemaObject {
+  export interface ArraySchemaObject extends BaseSchemaObject {
     type: ArraySchemaObjectType;
     items: ReferenceObject | SchemaObject;
   }
@@ -331,56 +377,40 @@ export interface OpenAPIFrameworkPathObject {
   module?: any;
 }
 
-export interface IOpenAPIFramework {
-  featureType: string;
-  loggingPrefix: string;
-  name: string;
-}
-
-interface OpenAPIFrameworkConstructorArgs extends OpenAPIFrameworkArgs {
-  featureType: string;
-  name: string;
-}
-
 interface OpenAPIFrameworkArgs {
   apiDoc: OpenAPIV3.Document | string;
-  customFormats?: { string: (arg: any) => boolean };
-  dependencies?: { [service: string]: any };
-  enableObjectCoercion?: boolean;
-  errorTransformer?: OpenAPIErrorTransformer;
-  externalSchemas?: { string: IJsonSchema };
-  pathSecurity?: PathSecurityTuple[];
-  operations?: { [operationId: string]: (...arg: any[]) => any };
-  paths?: string | OpenAPIFrameworkPathObject[];
-  pathsIgnore?: RegExp;
-  routesGlob?: string;
-  routesIndexFileRegExp?: RegExp;
   validateApiDoc?: boolean;
-  logger?: Logger;
+  $refParser?: {
+    mode: 'bundle' | 'dereference';
+  };
 }
 
 export interface OpenAPIFrameworkAPIContext {
-  basePaths: BasePath[];
-  // TODO fill this out
-  getApiDoc(): any;
-}
-
-export interface OpenAPIFrameworkPathContext {
-  basePaths: BasePath[];
-  // TODO fill this out
-  getApiDoc(): any;
-  getPathDoc(): any;
+  // basePaths: BasePath[];
+  basePaths: string[];
+  getApiDoc(): OpenAPIV3.Document;
 }
 
 export interface OpenAPIFrameworkVisitor {
   visitApi?(context: OpenAPIFrameworkAPIContext): void;
-  visitPath?(context: OpenAPIFrameworkPathContext): void;
-  // visitOperation?(context: OpenAPIFrameworkOperationContext): void;
+}
+
+export interface OpenApiRequestMetadata {
+  expressRoute: string;
+  openApiRoute: string;
+  pathParams: string[];
+  schema: OpenAPIV3.OperationObject;
 }
 
 export interface OpenApiRequest extends Request {
-  openapi;
+  openapi?: OpenApiRequestMetadata | {};
 }
+
+export type OpenApiRequestHandler = (
+  req: OpenApiRequest,
+  res: Response,
+  next: NextFunction,
+) => any;
 
 export interface IJsonSchema {
   id?: string;
@@ -424,29 +454,14 @@ export interface IJsonSchema {
   not?: IJsonSchema;
 }
 
-/* istanbul ignore next */
-export class ConsoleDebugAdapterLogger implements Logger {
-  /**
-   * `console.debug` is just an alias for `.log()`, and we want debug logging to be optional.
-   * This class delegates to `console` and overrides `.debug()` to be a no-op.
-   */
-  public debug(message?: any, ...optionalParams: any[]): void {
-    // no-op
-  }
+export interface ValidationError {
+  message?: string;
+  status: number;
+  errors: ValidationErrorItem[];
+}
 
-  public error(message?: any, ...optionalParams: any[]): void {
-    console.error(message, ...optionalParams);
-  }
-
-  public info(message?: any, ...optionalParams: any[]): void {
-    console.info(message, ...optionalParams);
-  }
-
-  public trace(message?: any, ...optionalParams: any[]): void {
-    console.trace(message, ...optionalParams);
-  }
-
-  public warn(message?: any, ...optionalParams: any[]): void {
-    console.warn(message, ...optionalParams);
-  }
+export interface ValidationErrorItem {
+  path: string;
+  message: string;
+  error_code?: string;
 }

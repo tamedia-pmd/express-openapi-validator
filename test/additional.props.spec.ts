@@ -1,14 +1,12 @@
+import * as request from 'supertest';
 import * as path from 'path';
 import * as express from 'express';
 import { expect } from 'chai';
-import * as request from 'supertest';
 import { createApp } from './common/app';
-
-const packageJson = require('../package.json');
+import * as packageJson from '../package.json';
 
 describe(packageJson.name, () => {
   let app = null;
-  let basePath = null;
 
   before(async () => {
     // Set up the express app
@@ -17,16 +15,14 @@ describe(packageJson.name, () => {
       'resources',
       'additional.properties.yaml',
     );
-    app = await createApp({ apiSpec }, 3005);
-    basePath = app.basePath;
-
-    // Define new coercion routes
-    app.use(
-      `${basePath}/additional_props`,
-      express
-        .Router()
-        .post(`/false`, (req, res) => res.json(req.body))
-        .post(`/true`, (req, res) => res.json(req.body)),
+    app = await createApp({ apiSpec }, 3005, app =>
+      app.use(
+        `${app.basePath}/additional_props`,
+        express
+          .Router()
+          .post(`/false`, (req, res) => res.json(req.body))
+          .post(`/true`, (req, res) => res.json(req.body)),
+      ),
     );
   });
 
@@ -36,14 +32,14 @@ describe(packageJson.name, () => {
 
   it('should return 400 if additionalProperties=false, but extra props sent', async () =>
     request(app)
-      .post(`${basePath}/additional_props/false`)
+      .post(`${app.basePath}/additional_props/false`)
       .send({
         name: 'test',
         extra_prop: 'test',
       })
       .expect(400)
       .then(r => {
-        expect(r.body.errors).to.be.an('array')
+        expect(r.body.errors).to.be.an('array');
         expect(r.body.errors).to.have.length(1);
         const message = r.body.errors[0].message;
         expect(message).to.equal('should NOT have additional properties');
@@ -51,7 +47,7 @@ describe(packageJson.name, () => {
 
   it('should return 200 if additonalProperities=true and extra props are sent', async () =>
     request(app)
-      .post(`${basePath}/additional_props/true`)
+      .post(`${app.basePath}/additional_props/true`)
       .send({
         name: 'test',
         extra_prop: 'test',
