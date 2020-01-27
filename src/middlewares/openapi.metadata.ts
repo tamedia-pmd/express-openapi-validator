@@ -25,7 +25,7 @@ export function applyOpenApiMetadata(
     } else if (openApiContext.isManagedRoute(req.path)) {
       req.openapi = {};
     }
-    -next();
+    next();
   };
 
   function lookupRoute(req: OpenApiRequest): OpenApiRequestMetadata {
@@ -33,7 +33,7 @@ export function applyOpenApiMetadata(
     let method = req.method;
     const crossOriginRequestMethod = req.headers["access-control-request-method"];
     if( crossOriginRequestMethod ){
-      method = crossOriginRequestMethod;
+      method = crossOriginRequestMethod.toString();
     }
     const routeEntries = Object.entries(openApiContext.expressRouteMap);
     for (const [expressRoute, methods] of routeEntries) {
